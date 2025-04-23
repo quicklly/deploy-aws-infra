@@ -1,0 +1,346 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Example CloudFormation template implementing the architecture diagram
+  (Seoul region, 2 Availability Zones, VPC, Application Load Balancer, CloudTrail, CloudWatch Logs, SNS, IAM).
+
+Parameters:
+  EC2KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: "Name of an existing EC2 KeyPair to enable SSH access to the instance"
+
+  DBUsername:
+    Type: String
+    NoEcho: true
+    Default: admin
+    Description: "RDS master username"
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: "RDS master user password (minimum 8 characters)"
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    AllowedValues:
+      - db.t3.micro
+      - db.t3.small
+      - db.t3.medium
+    Description: "RDS instance class"
+  DBEngine:
+    Type: String
+    Default: mysql
+    AllowedValues:
+      - mysql
+      - mariadb
+    Description: "RDS database engine"
+  DBEngineVersion:
+    Type: String
+    Default: "8.0"
+    Description: "RDS engine version"
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: "RDS allocated storage (GB)"
+
+Mappings:
+  AZMap:
+    ap-northeast-2:
+      PublicA: ap-northeast-2a
+      PublicC: ap-northeast-2c
+
+Resources:
+  ### VPC & Subnets ###
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpc"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-rt"
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !FindInMap [AZMap, ap-northeast-2, PublicA]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-1A"
+
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.13.0/24
+      AvailabilityZone: !FindInMap [AZMap, ap-northeast-2, PublicC]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-1C"
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.21.0/24
+      AvailabilityZone: !FindInMap [AZMap, ap-northeast-2, PublicA]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-1A"
+
+  PrivateSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.23.0/24
+      AvailabilityZone: !FindInMap [AZMap, ap-northeast-2, PublicC]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-1C"
+
+  ### Security Groups ###
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow HTTP and HTTPS"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow MySQL access from ALB"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+
+  ### Application Load Balancer ###
+  WebLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${AWS::StackName}-alb"
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetC
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  WebTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VPC
+      Protocol: HTTP
+      Port: 80
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: "200"
+
+  WebListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref WebLoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebTargetGroup
+
+  WebListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref WebLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: arn:aws:acm:ap-northeast-2:311611437522:certificate/cef28594-417f-4fbc-8249-3aed8ce3258d
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebTargetGroup
+
+  ### EC2 Instance ###
+  WebInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0eb302fcc77c2f8bd
+      InstanceType: t3.micro
+      KeyName: !Ref EC2KeyName
+      Tags:
+        - Key: Name
+          Value: WEB
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnetA
+          GroupSet:
+            - !Ref ALBSecurityGroup
+
+  # ### RDS (Commented Out) ###
+  # DBSubnetGroup:
+  #   Type: AWS::RDS::DBSubnetGroup
+  #   Properties:
+  #     DBSubnetGroupDescription: "RDS private subnet group"
+  #     SubnetIds:
+  #       - !Ref PrivateSubnetA
+  #       - !Ref PrivateSubnetC
+
+  # RDSInstance:
+  #   Type: AWS::RDS::DBInstance
+  #   Properties:
+  #     DBInstanceIdentifier: !Sub "${AWS::StackName}-db"
+  #     AllocatedStorage: !Ref DBAllocatedStorage
+  #     DBInstanceClass: !Ref DBInstanceClass
+  #     Engine: !Ref DBEngine
+  #     EngineVersion: !Ref DBEngineVersion
+  #     MasterUsername: !Ref DBUsername
+  #     MasterUserPassword: !Ref DBPassword
+  #     VPCSecurityGroups:
+  #       - !Ref RdsSecurityGroup
+  #     DBSubnetGroupName: !Ref DBSubnetGroup
+  #     PubliclyAccessible: false
+  #     MultiAZ: false
+
+  ### CloudTrail & CloudWatch Logs ###
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt LogsBucket.Arn
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${LogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  CloudTrailLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 365
+
+  CloudTrailLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: CloudTrailLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt CloudTrailLogGroup.Arn
+
+  CloudTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      TrailName: !Sub "${AWS::StackName}-trail"
+      IsLogging: true
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      S3BucketName: !Ref LogsBucket
+      CloudWatchLogsLogGroupArn: !GetAtt CloudTrailLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt CloudTrailLogsRole.Arn
+
+  SNSAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-alerts"
+
+Outputs:
+  VPCId:
+    Description: "VPC ID"
+    Value: !Ref VPC
+  LoadBalancerDNS:
+    Description: "ALB DNS name"
+    Value: !GetAtt WebLoadBalancer.DNSName
+  # RDSAddress:
+  #   Description: "RDS endpoint address"
+  #   Value: !GetAtt RDSInstance.Endpoint.Address
+  WebInstancePublicIp:
+    Description: "Public IP of WEB EC2 instance"
+    Value: !GetAtt WebInstance.PublicIp
