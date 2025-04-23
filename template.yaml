@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Example CloudFormation template implementing the architecture diagram
-  (Seoul region, 2 Availability Zones, VPC, Application Load Balancer, CloudTrail, CloudWatch Logs, SNS, IAM).
+  (Seoul region, 2 Availability Zones, VPC, Application Load Balancer, EC2, SNS).
 
 Parameters:
   EC2KeyName:
@@ -51,7 +51,7 @@ Mappings:
       PublicC: ap-northeast-2c
 
 Resources:
-  ### VPC & Subnets ###
+  ### VPC & Networking ###
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -112,26 +112,6 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-public-1C"
-
-  PrivateSubnetA:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.21.0/24
-      AvailabilityZone: !FindInMap [AZMap, ap-northeast-2, PublicA]
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-private-1A"
-
-  PrivateSubnetC:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.23.0/24
-      AvailabilityZone: !FindInMap [AZMap, ap-northeast-2, PublicC]
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-private-1C"
 
   ### Security Groups ###
   ALBSecurityGroup:
@@ -216,7 +196,7 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref WebTargetGroup
 
-  ### EC2 Instance ###
+  ### EC2 Instance (WEB) ###
   WebInstance:
     Type: AWS::EC2::Instance
     Properties:
@@ -233,103 +213,79 @@ Resources:
           GroupSet:
             - !Ref ALBSecurityGroup
 
-  # ### RDS (Commented Out) ###
-  # DBSubnetGroup:
-  #   Type: AWS::RDS::DBSubnetGroup
-  #   Properties:
-  #     DBSubnetGroupDescription: "RDS private subnet group"
-  #     SubnetIds:
-  #       - !Ref PrivateSubnetA
-  #       - !Ref PrivateSubnetC
-
-  # RDSInstance:
-  #   Type: AWS::RDS::DBInstance
-  #   Properties:
-  #     DBInstanceIdentifier: !Sub "${AWS::StackName}-db"
-  #     AllocatedStorage: !Ref DBAllocatedStorage
-  #     DBInstanceClass: !Ref DBInstanceClass
-  #     Engine: !Ref DBEngine
-  #     EngineVersion: !Ref DBEngineVersion
-  #     MasterUsername: !Ref DBUsername
-  #     MasterUserPassword: !Ref DBPassword
-  #     VPCSecurityGroups:
-  #       - !Ref RdsSecurityGroup
-  #     DBSubnetGroupName: !Ref DBSubnetGroup
-  #     PubliclyAccessible: false
-  #     MultiAZ: false
-
-  ### CloudTrail & CloudWatch Logs ###
-  LogsBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      VersioningConfiguration:
-        Status: Enabled
-
-  CloudTrailBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref LogsBucket
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: AWSCloudTrailAclCheck
-            Effect: Allow
-            Principal:
-              Service: cloudtrail.amazonaws.com
-            Action: s3:GetBucketAcl
-            Resource: !GetAtt LogsBucket.Arn
-          - Sid: AWSCloudTrailWrite
-            Effect: Allow
-            Principal:
-              Service: cloudtrail.amazonaws.com
-            Action: s3:PutObject
-            Resource: !Sub "${LogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
-            Condition:
-              StringEquals:
-                s3:x-amz-acl: bucket-owner-full-control
-
-  CloudTrailLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      RetentionInDays: 365
-
-  CloudTrailLogsRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: cloudtrail.amazonaws.com
-            Action: sts:AssumeRole
-      Path: "/"
-      Policies:
-        - PolicyName: CloudTrailLogsPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !GetAtt CloudTrailLogGroup.Arn
-
-  CloudTrail:
-    Type: AWS::CloudTrail::Trail
-    Properties:
-      TrailName: !Sub "${AWS::StackName}-trail"
-      IsLogging: true
-      IsMultiRegionTrail: true
-      IncludeGlobalServiceEvents: true
-      S3BucketName: !Ref LogsBucket
-      CloudWatchLogsLogGroupArn: !GetAtt CloudTrailLogGroup.Arn
-      CloudWatchLogsRoleArn: !GetAtt CloudTrailLogsRole.Arn
-
+  ### SNS Topic ###
   SNSAlertTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Sub "${AWS::StackName}-alerts"
+
+  ### CloudTrail & Logs (Commented Out) ###
+  # LogsBucket:
+  #   Type: AWS::S3::Bucket
+  #   Properties:
+  #     VersioningConfiguration:
+  #       Status: Enabled
+
+  # CloudTrailBucketPolicy:
+  #   Type: AWS::S3::BucketPolicy
+  #   Properties:
+  #     Bucket: !Ref LogsBucket
+  #     PolicyDocument:
+  #       Version: '2012-10-17'
+  #       Statement:
+  #         - Sid: AWSCloudTrailAclCheck
+  #           Effect: Allow
+  #           Principal:
+  #             Service: cloudtrail.amazonaws.com
+  #           Action: s3:GetBucketAcl
+  #           Resource: !GetAtt LogsBucket.Arn
+  #         - Sid: AWSCloudTrailWrite
+  #           Effect: Allow
+  #           Principal:
+  #             Service: cloudtrail.amazonaws.com
+  #           Action: s3:PutObject
+  #           Resource: !Sub "${LogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+  #           Condition:
+  #             StringEquals:
+  #               s3:x-amz-acl: bucket-owner-full-control
+
+  # CloudTrailLogGroup:
+  #   Type: AWS::Logs::LogGroup
+  #   Properties:
+  #     RetentionInDays: 365
+
+  # CloudTrailLogsRole:
+  #   Type: AWS::IAM::Role
+  #   Properties:
+  #     AssumeRolePolicyDocument:
+  #       Version: '2012-10-17'
+  #       Statement:
+  #         - Effect: Allow
+  #           Principal:
+  #             Service: cloudtrail.amazonaws.com
+  #           Action: sts:AssumeRole
+  #     Path: "/"
+  #     Policies:
+  #       - PolicyName: CloudTrailLogsPolicy
+  #         PolicyDocument:
+  #           Version: '2012-10-17'
+  #           Statement:
+  #             - Effect: Allow
+  #               Action:
+  #                 - logs:CreateLogStream
+  #                 - logs:PutLogEvents
+  #               Resource: !GetAtt CloudTrailLogGroup.Arn
+
+  # CloudTrail:
+  #   Type: AWS::CloudTrail::Trail
+  #   Properties:
+  #     TrailName: !Sub "${AWS::StackName}-trail"
+  #     IsLogging: true
+  #     IsMultiRegionTrail: true
+  #     IncludeGlobalServiceEvents: true
+  #     S3BucketName: !Ref LogsBucket
+  #     CloudWatchLogsLogGroupArn: !GetAtt CloudTrailLogGroup.Arn
+  #     CloudWatchLogsRoleArn: !GetAtt CloudTrailLogsRole.Arn
 
 Outputs:
   VPCId:
@@ -338,9 +294,6 @@ Outputs:
   LoadBalancerDNS:
     Description: "ALB DNS name"
     Value: !GetAtt WebLoadBalancer.DNSName
-  # RDSAddress:
-  #   Description: "RDS endpoint address"
-  #   Value: !GetAtt RDSInstance.Endpoint.Address
   WebInstancePublicIp:
     Description: "Public IP of WEB EC2 instance"
     Value: !GetAtt WebInstance.PublicIp
