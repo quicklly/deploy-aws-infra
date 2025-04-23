@@ -3,7 +3,7 @@ name: Deploy CloudFormation Stack
 on:
   push:
     branches:
-      - main
+      - master
     paths:
       - 'cloudformation-template.yaml'
 
