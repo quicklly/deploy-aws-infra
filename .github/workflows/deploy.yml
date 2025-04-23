@@ -5,7 +5,7 @@ on:
     branches:
       - master
     paths:
-      - 'cloudformation-template.yaml'
+      - '*'
 
 jobs:
   deploy:
